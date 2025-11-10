@@ -1,7 +1,7 @@
 // main.ts
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-
+//algun error
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   // comentario
