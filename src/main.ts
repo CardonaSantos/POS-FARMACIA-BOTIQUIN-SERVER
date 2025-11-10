@@ -6,13 +6,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   // comentario
   app.enableCors({
-    origin: [
-      'https://agrooccidente.up.railway.app',
-      'https://agrosil.up.railway.app',
-      'http://127.0.0.1:5173',
-      'http://localhost:5173',
-      // agrega aquí cualquier otro origin de tu front (p.ej. http://localhost:3001)
-    ],
+    origin: [''],
     credentials: true, // <- para cookies/withCredentials
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
