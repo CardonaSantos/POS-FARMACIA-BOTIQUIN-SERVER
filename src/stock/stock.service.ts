@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { CreateStockDto, StockEntryDTO } from './dto/create-stock.dto';
@@ -16,6 +17,12 @@ import * as timezone from 'dayjs/plugin/timezone';
 import 'dayjs/locale/es-mx';
 import { HistorialStockTrackerService } from 'src/historial-stock-tracker/historial-stock-tracker.service';
 import { TypeOperationStockTracker } from 'src/historial-stock-tracker/utils';
+import {
+  StockToEditPresentacion,
+  StockToEditProducto,
+  StockToEditResponse,
+} from './stock-edit.dto';
+import { StockKindEnum, UpdateStockDatesDto } from './update-stock-dates.dto';
 
 dayjs.extend(utc);
 dayjs.locale('es-mx');
@@ -23,6 +30,7 @@ dayjs.extend(timezone);
 
 @Injectable()
 export class StockService {
+  private readonly logger = new Logger(StockService.name);
   //
   constructor(
     private readonly prisma: PrismaService,
@@ -159,6 +167,190 @@ export class StockService {
       console.error(error);
       throw new InternalServerErrorException('Error al encontrar el stock');
     }
+  }
+
+  /**
+   * Auto-detecta si el id pertenece a Stock (PRODUCTO) o a StockPresentacion (PRESENTACION)
+   * y normaliza los datos para el UI de edición de fechas.
+   */
+  async getStockToEdit(
+    id: number,
+    preferred?: 'PRODUCTO' | 'PRESENTACION',
+  ): Promise<StockToEditResponse> {
+    const buildProducto = (stock: any): StockToEditProducto => ({
+      kind: 'PRODUCTO',
+      id: stock.id,
+      productoId: stock.productoId,
+      productoNombre: stock.producto.nombre,
+      codigoProducto: stock.producto.codigoProducto ?? undefined,
+      sucursalId: stock.sucursalId,
+      sucursalNombre: stock.sucursal.nombre,
+      cantidad: stock.cantidad,
+      precioCosto: stock.precioCosto,
+      fechaIngreso: stock.fechaIngreso.toISOString(),
+      fechaVencimiento: stock.fechaVencimiento
+        ? stock.fechaVencimiento.toISOString()
+        : null,
+    });
+
+    const buildPresentacion = (sp: any): StockToEditPresentacion => ({
+      kind: 'PRESENTACION',
+      id: sp.id,
+      productoId: sp.productoId,
+      productoNombre: sp.producto.nombre,
+      codigoProducto: sp.producto.codigoProducto ?? undefined,
+      presentacionId: sp.presentacionId,
+      presentacionNombre: sp.presentacion.nombre,
+      sucursalId: sp.sucursalId,
+      sucursalNombre: sp.sucursal.nombre,
+      cantidad: sp.cantidadPresentacion,
+      precioCosto: sp.precioCosto,
+      fechaIngreso: sp.fechaIngreso.toISOString(),
+      fechaVencimiento: sp.fechaVencimiento
+        ? sp.fechaVencimiento.toISOString()
+        : null,
+    });
+
+    // Helper selects
+    const stockSelect = {
+      id: true,
+      productoId: true,
+      cantidad: true,
+      precioCosto: true,
+      fechaIngreso: true,
+      fechaVencimiento: true,
+      sucursalId: true,
+      producto: { select: { id: true, nombre: true, codigoProducto: true } },
+      sucursal: { select: { id: true, nombre: true } },
+    };
+
+    const spSelect = {
+      id: true,
+      productoId: true,
+      presentacionId: true,
+      cantidadPresentacion: true,
+      precioCosto: true,
+      fechaIngreso: true,
+      fechaVencimiento: true,
+      sucursalId: true,
+      producto: { select: { id: true, nombre: true, codigoProducto: true } },
+      presentacion: { select: { id: true, nombre: true } },
+      sucursal: { select: { id: true, nombre: true } },
+    };
+
+    // 1) Si se indicó preferred, priorizamos esa tabla
+    if (preferred === 'PRODUCTO') {
+      const s = await this.prisma.stock.findUnique({
+        where: { id },
+        select: stockSelect,
+      });
+      if (!s)
+        throw new NotFoundException(`No existe Stock (PRODUCTO) con id=${id}`);
+      return buildProducto(s);
+    }
+
+    if (preferred === 'PRESENTACION') {
+      const sp = await this.prisma.stockPresentacion.findUnique({
+        where: { id },
+        select: spSelect,
+      });
+      if (!sp)
+        throw new NotFoundException(
+          `No existe StockPresentacion (PRESENTACION) con id=${id}`,
+        );
+      return buildPresentacion(sp);
+    }
+
+    // 2) Auto-detección legacy (por compatibilidad)
+    const s = await this.prisma.stock.findUnique({
+      where: { id },
+      select: stockSelect,
+    });
+    if (s) return buildProducto(s);
+
+    const sp = await this.prisma.stockPresentacion.findUnique({
+      where: { id },
+      select: spSelect,
+    });
+    if (sp) return buildPresentacion(sp);
+
+    throw new NotFoundException(
+      `No se encontró lote con id=${id} en Stock ni en StockPresentacion`,
+    );
+  }
+
+  /**
+   * actualizacion de stock
+   * @param dto A
+   * @returns
+   */
+  async updateStockDates(
+    dto: UpdateStockDatesDto,
+  ): Promise<StockToEditResponse> {
+    this.logger.log(`DTO recibido:\n${JSON.stringify(dto, null, 2)}`);
+
+    const ingreso = new Date(dto.fechaIngreso);
+    if (isNaN(ingreso.getTime())) {
+      throw new BadRequestException('fechaIngreso inválida');
+    }
+
+    let venc: Date | null = null;
+    if (dto.fechaVencimiento !== undefined && dto.fechaVencimiento !== null) {
+      const d = new Date(dto.fechaVencimiento);
+      if (isNaN(d.getTime())) {
+        throw new BadRequestException('fechaVencimiento inválida');
+      }
+      venc = d;
+    }
+
+    // Regla de negocio simple: si hay vencimiento, debe ser >= ingreso
+    if (venc && venc.getTime() < ingreso.getTime()) {
+      throw new BadRequestException(
+        'La fecha de caducidad no puede ser anterior a la fecha de ingreso',
+      );
+    }
+
+    if (dto.kind === StockKindEnum.PRODUCTO) {
+      // Verificamos existencia
+      const exists = await this.prisma.stock.findUnique({
+        where: { id: dto.id },
+        select: { id: true },
+      });
+      if (!exists) {
+        throw new NotFoundException(`No existe Stock con id=${dto.id}`);
+      }
+
+      await this.prisma.stock.update({
+        where: { id: dto.id },
+        data: {
+          fechaIngreso: ingreso,
+          fechaVencimiento: venc, // puede ser null
+        },
+      });
+    } else if (dto.kind === StockKindEnum.PRESENTACION) {
+      const exists = await this.prisma.stockPresentacion.findUnique({
+        where: { id: dto.id },
+        select: { id: true },
+      });
+      if (!exists) {
+        throw new NotFoundException(
+          `No existe StockPresentacion con id=${dto.id}`,
+        );
+      }
+
+      await this.prisma.stockPresentacion.update({
+        where: { id: dto.id },
+        data: {
+          fechaIngreso: ingreso,
+          fechaVencimiento: venc, // puede ser null
+        },
+      });
+    } else {
+      throw new BadRequestException('kind inválido');
+    }
+
+    // Devolvemos el payload normalizado para refrescar el UI
+    return this.getStockToEdit(dto.id);
   }
 
   async deleteOneStock(dto: DeleteStockDto) {
