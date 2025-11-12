@@ -191,7 +191,6 @@ export function mapPresentacionesArray(arr: any[]): PresentacionCreateDto[] {
       `presentaciones[${i}].preciosPresentacion`,
     );
 
-    // ✅ nuevo: validar categoriaIds
     const categoriaIdsRaw = Array.isArray(p?.categoriaIds)
       ? p.categoriaIds
       : [];
@@ -204,7 +203,6 @@ export function mapPresentacionesArray(arr: any[]): PresentacionCreateDto[] {
       codigoBarras: cleanStr(p?.codigoBarras) || undefined,
       esDefault: !!p?.esDefault,
 
-      // relación flexible
       tipoPresentacionId: toNullableInt(p?.tipoPresentacionId),
 
       costoReferencialPresentacion: toDecimalStringOrNull(

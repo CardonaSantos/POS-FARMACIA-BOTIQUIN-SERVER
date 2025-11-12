@@ -1450,7 +1450,16 @@ export class ProductsService {
         categorias: true,
         tipoPresentacion: true,
         imagenesProducto: true,
-        precios: { orderBy: { orden: 'asc' } },
+        precios: {
+          orderBy: { orden: 'asc' },
+          where: {
+            estado: 'APROBADO',
+            OR: [
+              { tipo: { not: 'CREADO_POR_SOLICITUD' } },
+              { AND: [{ tipo: 'CREADO_POR_SOLICITUD' }, { usado: false }] }, // temporales solo si no usados
+            ],
+          },
+        },
         stockThreshold: {
           select: {
             stockMinimo: true,

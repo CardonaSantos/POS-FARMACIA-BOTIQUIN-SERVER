@@ -7,6 +7,13 @@ export const productoSelect = {
   descripcion: true,
   precioCostoActual: true,
   precios: {
+    where: {
+      estado: 'APROBADO',
+      OR: [
+        { tipo: { not: 'CREADO_POR_SOLICITUD' } },
+        { AND: [{ tipo: 'CREADO_POR_SOLICITUD' }, { usado: false }] }, // temporales solo si no usados
+      ],
+    },
     select: {
       id: true,
       estado: true,
@@ -64,6 +71,13 @@ export const presentacionSelect = {
   costoReferencialPresentacion: true,
   descripcion: true,
   precios: {
+    where: {
+      estado: 'APROBADO',
+      OR: [
+        { tipo: { not: 'CREADO_POR_SOLICITUD' } },
+        { AND: [{ tipo: 'CREADO_POR_SOLICITUD' }, { usado: false }] }, // temporales solo si no usados
+      ],
+    },
     select: {
       id: true,
       estado: true,

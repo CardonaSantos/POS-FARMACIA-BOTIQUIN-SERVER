@@ -12,7 +12,13 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { ClientService } from 'src/client/client.service';
 import { NotificationService } from 'src/notification/notification.service';
 import { NotificationToEmit } from 'src/web-sockets/Types/NotificationTypeSocket';
-import { MetodoPago, Prisma, Rol } from '@prisma/client';
+import {
+  EstadoPrecio,
+  MetodoPago,
+  Prisma,
+  Rol,
+  TipoPrecio,
+} from '@prisma/client';
 import { HistorialStockTrackerService } from 'src/historial-stock-tracker/historial-stock-tracker.service';
 import { CreateRequisicionRecepcionLineaDto } from 'src/recepcion-requisiciones/dto/requisicion-recepcion-create.dto';
 import { SoloIDProductos } from 'src/recepcion-requisiciones/dto/create-venta-tracker.dto';
@@ -276,6 +282,60 @@ export class VentaService {
         cantidadesAnterioresPres[prId] = agg._sum.cantidadPresentacion ?? 0;
       }
 
+      // PRECIOS TEMPORALES ---->
+      // 4.1 — Reclamar precios temporales
+      const allSelectedIds = Array.from(
+        new Set([
+          ...prodConsolidadas.map((x) => x.selectedPriceId),
+          ...presConsolidadas.map((x) => x.selectedPriceId),
+        ]),
+      );
+
+      // si no hay precios seleccionados, evita ir a DB
+      if (allSelectedIds.length) {
+        // Filtra solo precios temporales aprobados
+        const temporales = await tx.precioProducto.findMany({
+          where: {
+            id: { in: allSelectedIds },
+            tipo: 'CREADO_POR_SOLICITUD',
+            estado: EstadoPrecio.APROBADO,
+          },
+          select: { id: true, usado: true },
+        });
+
+        // Si ya viene alguno usado, aborta
+        if (temporales.some((p) => p.usado)) {
+          throw new BadRequestException(
+            'Uno de los precios temporales ya fue usado.',
+          );
+        }
+
+        const idsTemporales = temporales.map((p) => p.id);
+
+        if (idsTemporales.length) {
+          // Reclamo atómico: solo marcará si usado=false
+          const { count } = await tx.precioProducto.updateMany({
+            where: { id: { in: idsTemporales }, usado: false },
+            data: { usado: true },
+          });
+
+          // Si alguien más lo “ganó” entre el find y el updateMany, count no cuadra
+          if (count !== idsTemporales.length) {
+            throw new BadRequestException(
+              'Colisión de concurrencia: un precio temporal ya fue utilizado por otra venta.',
+            );
+          }
+
+          // >>> Continúa con stock FIFO, totales, etc. <<<
+
+          // (Opcional) tras crear la venta, deja rastro:
+          // await tx.precioProducto.updateMany({
+          //   where: { id: { in: idsTemporales } },
+          //   data: { consumidoEnVentaId: venta.id }, // si añades esta columna al schema
+          // });
+        }
+      }
+
       // ----------------------------------------------------------------
       // 5) Descontar STOCK FIFO (producto + presentacion) (sin cambios)
       // ----------------------------------------------------------------
@@ -417,11 +477,13 @@ export class VentaService {
           sucursal: { connect: { id: sucursalId } },
           productos: {
             create: [
-              ...prodConsolidadas.map((x) => ({
-                producto: { connect: { id: x.productoId } },
-                cantidad: x.cantidad,
-                precioVenta: toNumber4(x.precioVenta),
-              })),
+              ...prodConsolidadas.map((x) => {
+                return {
+                  producto: { connect: { id: x.productoId } },
+                  cantidad: x.cantidad,
+                  precioVenta: toNumber4(x.precioVenta),
+                };
+              }),
               ...presConsolidadas.map((x) => ({
                 producto: { connect: { id: x.productoId } },
                 presentacion: { connect: { id: x.presentacionId } },
